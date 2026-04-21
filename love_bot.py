@@ -1,7 +1,9 @@
 import random
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -13,124 +15,213 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes
 )
+from telegram.error import RetryAfter, BadRequest
 
-# ✅ Получаем токен из Railway
 TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN не найден! Проверь переменные Railway.")
+    raise ValueError("BOT_TOKEN не найден!")
 
-# ✅ Дата встречи (измени на свою)
-MEETING_TIME = datetime(2026, 5, 2, 18, 0, 0)
+MSK = ZoneInfo("Europe/Moscow")
+MEETING_TIME = datetime(2026, 5, 1, 23, 0, 0, tzinfo=MSK)
+
+active_countdowns = {}
+users = set()
+notified_24h = False
+notified_1h = False
 
 LOVE_PHRASES = [
-    "Каждую секунду жду этого момента ❤️",
-    "Не могу дождаться встречи с тобой ❤️",
-    "Секунды тянутся, потому что я скучаю ❤️",
-    "Ты даже не представляешь, как я жду тебя ❤️",
-    "С каждым днём я радуюсь всё сильнее ❤️",
-    "Моё сердце считает секунды до встречи ❤️",
-    "Скоро обниму тебя крепко-крепко ❤️",
-    "Время идёт, а чувства только сильнее ❤️",
-    "Я уже мысленно рядом с тобой ❤️",
-    "Каждая секунда приближает нас ❤️",
-    "Жду тебя больше всего на свете ❤️",
-    "Скоро увижу твою улыбку ❤️",
-    "Даже часы знают, как сильно я жду ❤️",
-    "Ты — самое важное ожидание в моей жизни ❤️",
+    "Каждую секунду жду тебя ❤️",
+    "Скоро обниму тебя ❤️",
+    "Я считаю минуты до нашей встречи ❤️",
+    "Моё сердце ускоряется ❤️",
+    "Я уже мысленно рядом ❤️",
+    "Секунда ближе к твоей улыбке ❤️",
     "Скоро скажу тебе это лично ❤️",
-    "Я уже считаю мгновения ❤️",
-    "Моё счастье приближается ❤️",
-    "Скоро буду рядом и не отпущу ❤️",
-    "Ты — мой самый долгожданный момент ❤️",
-    "Всё вокруг напоминает о тебе ❤️"
+    "Я скучаю всё сильнее ❤️",
+    "Ты — моё самое главное ожидание ❤️",
+    "Скоро почувствую твои объятия ❤️",
+    "Я представляю этот момент каждый день ❤️",
+    "Время идёт, а чувства только сильнее ❤️",
+    "Каждый тик часов — ближе к тебе ❤️",
+    "Я готовлю самое тёплое объятие ❤️",
+    "Секунды идут слишком медленно ❤️",
+    "Ты — причина моей улыбки ❤️",
+    "Я жду тебя больше всего на свете ❤️",
+    "Этот день станет особенным ❤️",
+    "Скоро будем вместе ❤️",
+    "Это ожидание стоит всего ❤️"
 ]
 
-# ✅ Храним активные таймеры
-active_countdowns = {}
 
-def format_time_delta(delta):
-    total_seconds = int(delta.total_seconds())
+def keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Перезапустить таймер", callback_data="restart")]
+    ])
 
-    days = total_seconds // 86400
-    hours = (total_seconds % 86400) // 3600
-    minutes = (total_seconds % 3600) // 60
-    seconds = total_seconds % 60
 
-    return f"*{days}* дн. *{hours}* ч. *{minutes}* мин. *{seconds}* сек."
+def format_time(delta, mode="full"):
+    total = int(delta.total_seconds())
+    days = total // 86400
+    hours = (total % 86400) // 3600
+    minutes = (total % 3600) // 60
+    seconds = total % 60
+
+    if mode == "hours":
+        return f"*{hours}* ч. *{minutes}* мин. *{seconds}* сек."
+    elif mode == "minutes":
+        return f"*{minutes}* мин. *{seconds}* сек."
+    else:
+        return f"*{days}* дн. *{hours}* ч. *{minutes}* мин. *{seconds}* сек."
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("Узнать время до встречи 💌", callback_data="countdown")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    user = update.effective_user
+    users.add(user.id)
+
+    print(f"[START] {datetime.now(MSK)} | ID: {user.id} | @{user.username}")
 
     await update.message.reply_text(
-        "✨ *Нажми кнопку ниже, чтобы узнать…* ✨",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
+        "✨ Нажми кнопку ниже ✨",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💌 Узнать время до встречи", callback_data="start_timer")]
+        ])
     )
 
-async def countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
 
+async def start_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
     await query.answer()
 
-    if user_id in active_countdowns:
-        await query.answer("Отсчёт уже запущен ❤️", show_alert=True)
-        return
+    user = query.from_user
+    users.add(user.id)
 
-    active_countdowns[user_id] = True
+    print(f"[TIMER START] {datetime.now(MSK)} | ID: {user.id} | @{user.username}")
 
-    message = await query.message.edit_text(
-        "💞 *Считаем секунды до встречи...* 💞",
-        parse_mode="Markdown"
-    )
+    # удалить старый таймер
+    if user.id in active_countdowns:
+        try:
+            active_countdowns[user.id]["task"].cancel()
+            await active_countdowns[user.id]["message"].delete()
+            print(f"[TIMER RESTART] Старый таймер удалён | ID: {user.id}")
+        except:
+            pass
 
-    # ✅ запускаем фоновый таймер
-    context.application.create_task(
-        run_countdown_loop(user_id, message)
-    )
+    message = await query.message.reply_text("Запускаю таймер... ❤️")
 
-async def run_countdown_loop(user_id, message):
+    task = context.application.create_task(run_timer(user.id, message))
+
+    active_countdowns[user.id] = {
+        "task": task,
+        "message": message
+    }
+
+
+async def run_timer(user_id, message):
+    global notified_24h, notified_1h
+
     phrase = random.choice(LOVE_PHRASES)
-    last_phrase_change = datetime.now()
+    last_phrase_change = datetime.now(MSK)
 
     try:
         while True:
-            now = datetime.now()
+            now = datetime.now(MSK)
+            delta = MEETING_TIME - now
 
-            # меняем фразу каждые 5 секунд
+            if delta.total_seconds() <= 10:
+                await cinematic_finale(message)
+                break
+
+            # смена фразы каждые 5 секунд
             if (now - last_phrase_change).total_seconds() >= 5:
                 phrase = random.choice(LOVE_PHRASES)
                 last_phrase_change = now
 
-            if MEETING_TIME > now:
-                delta = MEETING_TIME - now
-                time_text = format_time_delta(delta)
+            # уведомление за 24 часа
+            if not notified_24h and delta <= timedelta(hours=24):
+                notified_24h = True
+                print("[NOTIFY 24H]")
+                await notify_all("💖 Всего сутки остались до нашей встречи 💖", "hours")
 
-                text = (
-                    "💖 *До нашей встречи осталось:* 💖\n\n"
-                    f"⏳ {time_text}\n\n"
-                    f"_{phrase}_"
-                )
+            # уведомление за 1 час
+            if not notified_1h and delta <= timedelta(hours=1):
+                notified_1h = True
+                print("[NOTIFY 1H]")
+                await notify_all("💓 60 минут и мы увидимся 💓", "minutes")
+
+            if delta <= timedelta(hours=1):
+                mode = "minutes"
+            elif delta <= timedelta(hours=24):
+                mode = "hours"
             else:
-                text = "❤️ *Мы уже вместе!* ❤️"
+                mode = "full"
 
-            await message.edit_text(text, parse_mode="Markdown")
+            text = (
+                "💖 До нашей встречи осталось 💖\n\n"
+                f"⏳ {format_time(delta, mode)}\n\n"
+                f"{phrase}"
+            )
+
+            try:
+                await message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard())
+            except RetryAfter as e:
+                print(f"[FloodWait] Ждём {e.retry_after} сек")
+                await asyncio.sleep(e.retry_after)
+            except BadRequest:
+                print("[ERROR] Message not found")
+                break
+
             await asyncio.sleep(1)
 
-    except Exception as e:
-        print("Ошибка в таймере:", e)
+    except asyncio.CancelledError:
+        pass
 
-    finally:
-        active_countdowns.pop(user_id, None)
+
+async def notify_all(text, mode):
+    for user_id in list(users):
+        try:
+            print(f"[NOTIFY] Отправлено пользователю {user_id}")
+            message = await app.bot.send_message(user_id, text)
+            task = app.create_task(run_timer(user_id, message))
+            active_countdowns[user_id] = {
+                "task": task,
+                "message": message
+            }
+        except Exception as e:
+            print(f"[NOTIFY ERROR] {user_id} | {e}")
+
+
+async def cinematic_finale(message):
+    print("[FINALE STARTED]")
+
+    for i in range(10, 0, -1):
+        await message.edit_text(f"💓 {i}...\nЯ уже рядом...")
+        await asyncio.sleep(1)
+
+    frames = ["💖", "💖💖", "💖💖💖", "💞💞💞", "💘💘💘"]
+
+    for frame in frames:
+        await message.edit_text(frame)
+        await asyncio.sleep(0.5)
+
+    await message.edit_text(
+        "🎆✨ МЫ ВСТРЕТИЛИСЬ!!! ✨🎆\n\n"
+        "Это больше не ожидание.\n"
+        "Это — наша реальность ❤️"
+    )
+
+    print("[FINALE COMPLETED]")
+
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start_timer(update, context)
+
 
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(countdown, pattern="countdown"))
+app.add_handler(CallbackQueryHandler(start_timer, pattern="start_timer"))
+app.add_handler(CallbackQueryHandler(restart, pattern="restart"))
 
 print("Бот запущен...")
 app.run_polling(drop_pending_updates=True)
