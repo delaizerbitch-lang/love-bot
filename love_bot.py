@@ -85,14 +85,10 @@ async def start_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
 
-    # если таймер уже есть — просто перезапускаем
     if user_id in active_timers:
         active_timers[user_id]["task"].cancel()
 
-    message = await query.message.edit_text(
-        "❤️ Таймер запускается... ❤️",
-        reply_markup=None
-    )
+    message = query.message
 
     task = context.application.create_task(run_timer(user_id, message))
 
@@ -115,7 +111,8 @@ async def run_timer(user_id, message):
         delta = MEETING_TIME - now
 
         if delta.total_seconds() <= 0:
-            await message.edit_text(
+            await safe_edit(
+                message,
                 "🎆✨ МЫ ВСТРЕТИЛИСЬ!!! ✨🎆\n\nТеперь это реальность ❤️"
             )
             break
@@ -130,16 +127,23 @@ async def run_timer(user_id, message):
             f"{phrase}"
         )
 
+        await safe_edit(message, text)
+
+        await asyncio.sleep(1)
+
+
+async def safe_edit(message, text):
+    while True:
         try:
             await message.edit_text(
                 text,
                 parse_mode="Markdown",
                 reply_markup=timer_keyboard()
             )
-            await asyncio.sleep(1)
+            break
 
         except RetryAfter as e:
-            print(f"[FloodWait] Ждём {e.retry_after} сек")
+            print(f"[FloodWait] Ждём {e.retry_after} секунд")
             await asyncio.sleep(e.retry_after)
 
         except Forbidden:
