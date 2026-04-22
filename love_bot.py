@@ -96,19 +96,26 @@ async def start_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     users.add(user.id)
 
-    print(f"[TIMER START] {datetime.now(MSK)} | ID: {user.id} | @{user.username}")
+    print(f"[TIMER START/RESTART] {datetime.now(MSK)} | ID: {user.id}")
 
-    # удалить старый таймер
+    # Если есть старый таймер — корректно его останавливаем
     if user.id in active_countdowns:
         try:
             active_countdowns[user.id]["task"].cancel()
-            await active_countdowns[user.id]["message"].delete()
-            print(f"[TIMER RESTART] Старый таймер удалён | ID: {user.id}")
         except:
             pass
 
-    message = await query.message.reply_text("Запускаю таймер... ❤️")
+        try:
+            await active_countdowns[user.id]["message"].delete()
+        except:
+            pass
 
+        del active_countdowns[user.id]
+
+    # Создаём новое сообщение
+    message = await query.message.reply_text("❤️ Таймер запущен ❤️")
+
+    # Создаём новую задачу
     task = context.application.create_task(run_timer(user.id, message))
 
     active_countdowns[user.id] = {
@@ -132,22 +139,9 @@ async def run_timer(user_id, message):
                 await cinematic_finale(message)
                 break
 
-            # смена фразы каждые 5 секунд
             if (now - last_phrase_change).total_seconds() >= 5:
                 phrase = random.choice(LOVE_PHRASES)
                 last_phrase_change = now
-
-            # уведомление за 24 часа
-            if not notified_24h and delta <= timedelta(hours=24):
-                notified_24h = True
-                print("[NOTIFY 24H]")
-                await notify_all("💖 Всего сутки остались до нашей встречи 💖", "hours")
-
-            # уведомление за 1 час
-            if not notified_1h and delta <= timedelta(hours=1):
-                notified_1h = True
-                print("[NOTIFY 1H]")
-                await notify_all("💓 60 минут и мы увидимся 💓", "minutes")
 
             if delta <= timedelta(hours=1):
                 mode = "minutes"
@@ -163,12 +157,15 @@ async def run_timer(user_id, message):
             )
 
             try:
-                await message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard())
+                await message.edit_text(
+                    text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard()
+                )
             except RetryAfter as e:
-                print(f"[FloodWait] Ждём {e.retry_after} сек")
+                print(f"[FloodWait] Ждём {e.retry_after}")
                 await asyncio.sleep(e.retry_after)
             except BadRequest:
-                print("[ERROR] Message not found")
                 break
 
             await asyncio.sleep(1)
@@ -177,22 +174,8 @@ async def run_timer(user_id, message):
         pass
 
 
-async def notify_all(text, mode):
-    for user_id in list(users):
-        try:
-            print(f"[NOTIFY] Отправлено пользователю {user_id}")
-            message = await app.bot.send_message(user_id, text)
-            task = app.create_task(run_timer(user_id, message))
-            active_countdowns[user_id] = {
-                "task": task,
-                "message": message
-            }
-        except Exception as e:
-            print(f"[NOTIFY ERROR] {user_id} | {e}")
-
-
 async def cinematic_finale(message):
-    print("[FINALE STARTED]")
+    print("[FINALE START]")
 
     for i in range(10, 0, -1):
         await message.edit_text(f"💓 {i}...\nЯ уже рядом...")
@@ -210,7 +193,7 @@ async def cinematic_finale(message):
         "Это — наша реальность ❤️"
     )
 
-    print("[FINALE COMPLETED]")
+    print("[FINALE DONE]")
 
 
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
