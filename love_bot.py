@@ -51,9 +51,15 @@ LOVE_PHRASES = [
 ]
 
 
-def keyboard():
+def start_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Перезапустить таймер", callback_data="restart")]
+        [InlineKeyboardButton("💌 Узнать время до встречи", callback_data="show_timer")]
+    ])
+
+
+def timer_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Перезапустить таймер", callback_data="restart_timer")]
     ])
 
 
@@ -63,13 +69,24 @@ def format_time(delta):
     hours = (total % 86400) // 3600
     minutes = (total % 3600) // 60
     seconds = total % 60
+
     return f"*{days}* дн. *{hours}* ч. *{minutes}* мин. *{seconds}* сек."
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    await update.message.reply_text(
+        "✨ Нажми кнопку ниже ✨",
+        reply_markup=start_keyboard()
+    )
 
-    # если таймер уже есть — удаляем
+
+async def show_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    # если уже есть таймер — удаляем
     if user_id in active_timers:
         try:
             active_timers[user_id]["task"].cancel()
@@ -83,7 +100,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         del active_timers[user_id]
 
-    message = await update.message.reply_text("❤️ Таймер запускается... ❤️")
+    message = await query.message.reply_text("❤️ Таймер запускается... ❤️")
 
     task = context.application.create_task(run_timer(user_id, message))
 
@@ -93,13 +110,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
 
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def restart_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     user_id = query.from_user.id
 
-    # корректно останавливаем старый таймер
     if user_id in active_timers:
         try:
             active_timers[user_id]["task"].cancel()
@@ -139,7 +155,7 @@ async def run_timer(user_id, message):
                 )
                 break
 
-            # меняем фразу каждые 5 секунд
+            # смена фразы каждые 5 секунд
             if (now - last_phrase_change).total_seconds() >= 5:
                 phrase = random.choice(LOVE_PHRASES)
                 last_phrase_change = now
@@ -154,13 +170,17 @@ async def run_timer(user_id, message):
                 await message.edit_text(
                     text,
                     parse_mode="Markdown",
-                    reply_markup=keyboard()
+                    reply_markup=timer_keyboard()
                 )
             except RetryAfter as e:
                 await asyncio.sleep(e.retry_after)
             except BadRequest:
                 # если сообщение исчезло — создаём новое
-                message = await message.chat.send_message(text, parse_mode="Markdown", reply_markup=keyboard())
+                message = await message.chat.send_message(
+                    text,
+                    parse_mode="Markdown",
+                    reply_markup=timer_keyboard()
+                )
 
             await asyncio.sleep(1)
 
@@ -171,7 +191,8 @@ async def run_timer(user_id, message):
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(restart, pattern="restart"))
+app.add_handler(CallbackQueryHandler(show_timer, pattern="show_timer"))
+app.add_handler(CallbackQueryHandler(restart_timer, pattern="restart_timer"))
 
 print("Бот запущен...")
 app.run_polling(drop_pending_updates=True)
