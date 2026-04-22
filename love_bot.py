@@ -1,7 +1,7 @@
 import random
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telegram import (
@@ -25,10 +25,7 @@ if not TOKEN:
 MSK = ZoneInfo("Europe/Moscow")
 MEETING_TIME = datetime(2026, 5, 1, 23, 0, 0, tzinfo=MSK)
 
-active_countdowns = {}
-users = set()
-notified_24h = False
-notified_1h = False
+active_timers = {}
 
 LOVE_PHRASES = [
     "Каждую секунду жду тебя ❤️",
@@ -60,73 +57,73 @@ def keyboard():
     ])
 
 
-def format_time(delta, mode="full"):
+def format_time(delta):
     total = int(delta.total_seconds())
     days = total // 86400
     hours = (total % 86400) // 3600
     minutes = (total % 3600) // 60
     seconds = total % 60
-
-    if mode == "hours":
-        return f"*{hours}* ч. *{minutes}* мин. *{seconds}* сек."
-    elif mode == "minutes":
-        return f"*{minutes}* мин. *{seconds}* сек."
-    else:
-        return f"*{days}* дн. *{hours}* ч. *{minutes}* мин. *{seconds}* сек."
+    return f"*{days}* дн. *{hours}* ч. *{minutes}* мин. *{seconds}* сек."
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    users.add(user.id)
+    user_id = update.effective_user.id
 
-    print(f"[START] {datetime.now(MSK)} | ID: {user.id} | @{user.username}")
+    # если таймер уже есть — удаляем
+    if user_id in active_timers:
+        try:
+            active_timers[user_id]["task"].cancel()
+        except:
+            pass
 
-    await update.message.reply_text(
-        "✨ Нажми кнопку ниже ✨",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💌 Узнать время до встречи", callback_data="start_timer")]
-        ])
-    )
+        try:
+            await active_timers[user_id]["message"].delete()
+        except:
+            pass
+
+        del active_timers[user_id]
+
+    message = await update.message.reply_text("❤️ Таймер запускается... ❤️")
+
+    task = context.application.create_task(run_timer(user_id, message))
+
+    active_timers[user_id] = {
+        "task": task,
+        "message": message
+    }
 
 
-async def start_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    user = query.from_user
-    users.add(user.id)
+    user_id = query.from_user.id
 
-    print(f"[TIMER START/RESTART] {datetime.now(MSK)} | ID: {user.id}")
-
-    # Если есть старый таймер — корректно его останавливаем
-    if user.id in active_countdowns:
+    # корректно останавливаем старый таймер
+    if user_id in active_timers:
         try:
-            active_countdowns[user.id]["task"].cancel()
+            active_timers[user_id]["task"].cancel()
         except:
             pass
 
         try:
-            await active_countdowns[user.id]["message"].delete()
+            await active_timers[user_id]["message"].delete()
         except:
             pass
 
-        del active_countdowns[user.id]
+        del active_timers[user_id]
 
-    # Создаём новое сообщение
-    message = await query.message.reply_text("❤️ Таймер запущен ❤️")
+    message = await query.message.chat.send_message("❤️ Таймер перезапущен ❤️")
 
-    # Создаём новую задачу
-    task = context.application.create_task(run_timer(user.id, message))
+    task = context.application.create_task(run_timer(user_id, message))
 
-    active_countdowns[user.id] = {
+    active_timers[user_id] = {
         "task": task,
         "message": message
     }
 
 
 async def run_timer(user_id, message):
-    global notified_24h, notified_1h
-
     phrase = random.choice(LOVE_PHRASES)
     last_phrase_change = datetime.now(MSK)
 
@@ -135,24 +132,21 @@ async def run_timer(user_id, message):
             now = datetime.now(MSK)
             delta = MEETING_TIME - now
 
-            if delta.total_seconds() <= 10:
-                await cinematic_finale(message)
+            if delta.total_seconds() <= 0:
+                await message.edit_text(
+                    "🎆✨ МЫ ВСТРЕТИЛИСЬ!!! ✨🎆\n\n"
+                    "Теперь это реальность ❤️"
+                )
                 break
 
+            # меняем фразу каждые 5 секунд
             if (now - last_phrase_change).total_seconds() >= 5:
                 phrase = random.choice(LOVE_PHRASES)
                 last_phrase_change = now
 
-            if delta <= timedelta(hours=1):
-                mode = "minutes"
-            elif delta <= timedelta(hours=24):
-                mode = "hours"
-            else:
-                mode = "full"
-
             text = (
                 "💖 До нашей встречи осталось 💖\n\n"
-                f"⏳ {format_time(delta, mode)}\n\n"
+                f"⏳ {format_time(delta)}\n\n"
                 f"{phrase}"
             )
 
@@ -163,10 +157,10 @@ async def run_timer(user_id, message):
                     reply_markup=keyboard()
                 )
             except RetryAfter as e:
-                print(f"[FloodWait] Ждём {e.retry_after}")
                 await asyncio.sleep(e.retry_after)
             except BadRequest:
-                break
+                # если сообщение исчезло — создаём новое
+                message = await message.chat.send_message(text, parse_mode="Markdown", reply_markup=keyboard())
 
             await asyncio.sleep(1)
 
@@ -174,36 +168,9 @@ async def run_timer(user_id, message):
         pass
 
 
-async def cinematic_finale(message):
-    print("[FINALE START]")
-
-    for i in range(10, 0, -1):
-        await message.edit_text(f"💓 {i}...\nЯ уже рядом...")
-        await asyncio.sleep(1)
-
-    frames = ["💖", "💖💖", "💖💖💖", "💞💞💞", "💘💘💘"]
-
-    for frame in frames:
-        await message.edit_text(frame)
-        await asyncio.sleep(0.5)
-
-    await message.edit_text(
-        "🎆✨ МЫ ВСТРЕТИЛИСЬ!!! ✨🎆\n\n"
-        "Это больше не ожидание.\n"
-        "Это — наша реальность ❤️"
-    )
-
-    print("[FINALE DONE]")
-
-
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_timer(update, context)
-
-
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(start_timer, pattern="start_timer"))
 app.add_handler(CallbackQueryHandler(restart, pattern="restart"))
 
 print("Бот запущен...")
